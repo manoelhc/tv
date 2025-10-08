@@ -143,33 +143,35 @@ fn get_value(query: &str, file: Option<&std::path::Path>) -> Result<Option<Strin
     // Find the block
     for structure in body.iter() {
         if let Some(block) = structure.as_block()
-            && block.ident.as_str() == parsed_query.block_type {
-                // Check labels
-                let labels: Vec<String> = block
-                    .labels
-                    .iter()
-                    .map(|l| l.as_str())
-                    .map(|s| s.to_string())
-                    .collect();
+            && block.ident.as_str() == parsed_query.block_type
+        {
+            // Check labels
+            let labels: Vec<String> = block
+                .labels
+                .iter()
+                .map(|l| l.as_str())
+                .map(|s| s.to_string())
+                .collect();
 
-                if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
-                    // Find the attribute
-                    for attr_item in block.body.iter() {
-                        if let Some(attr) = attr_item.as_attribute()
-                            && attr.key.as_str() == parsed_query.attribute {
-                                let value_str = attr.value.to_string();
+            if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
+                // Find the attribute
+                for attr_item in block.body.iter() {
+                    if let Some(attr) = attr_item.as_attribute()
+                        && attr.key.as_str() == parsed_query.attribute
+                    {
+                        let value_str = attr.value.to_string();
 
-                                if let Some(ref index_key) = parsed_query.index {
-                                    // Need to extract the value from the string
-                                    // Looking for key=value pattern in the source string
-                                    return extract_param_from_source(&value_str, index_key);
-                                }
+                        if let Some(ref index_key) = parsed_query.index {
+                            // Need to extract the value from the string
+                            // Looking for key=value pattern in the source string
+                            return extract_param_from_source(&value_str, index_key);
+                        }
 
-                                return Ok(Some(value_str.trim().trim_matches('"').to_string()));
-                            }
+                        return Ok(Some(value_str.trim().trim_matches('"').to_string()));
                     }
                 }
             }
+        }
     }
 
     Ok(None)
@@ -254,11 +256,11 @@ fn extract_path_from_source(source: &str) -> Option<String> {
     if let Some(path_start) = source[search_start..].find("//") {
         let path_begin = search_start + path_start + 2;
         let remaining = &source[path_begin..];
-        
+
         // Path ends at query string or end of string
         let path_end = remaining.find('?').unwrap_or(remaining.len());
         let path = &remaining[..path_end];
-        
+
         if !path.is_empty() {
             return Some(path.to_string());
         }
@@ -282,65 +284,66 @@ fn set_value(query: &str, value: &str, file: Option<&std::path::Path>) -> Result
     let mut found = false;
     for mut structure in body.iter_mut() {
         if let Some(block) = structure.as_block_mut()
-            && block.ident.as_str() == parsed_query.block_type {
-                // Check labels
-                let labels: Vec<String> = block
-                    .labels
-                    .iter()
-                    .map(|l| l.as_str())
-                    .map(|s| s.to_string())
-                    .collect();
+            && block.ident.as_str() == parsed_query.block_type
+        {
+            // Check labels
+            let labels: Vec<String> = block
+                .labels
+                .iter()
+                .map(|l| l.as_str())
+                .map(|s| s.to_string())
+                .collect();
 
-                if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
-                    // Find the attribute position
-                    let pos = block.body.iter().position(|s| {
-                        s.as_attribute()
-                            .map(|a| a.key.as_str() == parsed_query.attribute)
-                            .unwrap_or(false)
-                    });
+            if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
+                // Find the attribute position
+                let pos = block.body.iter().position(|s| {
+                    s.as_attribute()
+                        .map(|a| a.key.as_str() == parsed_query.attribute)
+                        .unwrap_or(false)
+                });
 
-                    if let Some(pos) = pos {
-                        // Get current value if we need to modify a parameter
-                        let new_value_str = if let Some(ref index_key) = parsed_query.index {
-                            // Get the current value
-                            if let Some(attr_struct) = block.body.get(pos) {
-                                if let Some(attr) = attr_struct.as_attribute() {
-                                    let current_value = attr.value.to_string();
-                                    update_param_in_source(&current_value, index_key, value)?
-                                } else {
-                                    return Err(anyhow!("Expected attribute at position"));
-                                }
+                if let Some(pos) = pos {
+                    // Get current value if we need to modify a parameter
+                    let new_value_str = if let Some(ref index_key) = parsed_query.index {
+                        // Get the current value
+                        if let Some(attr_struct) = block.body.get(pos) {
+                            if let Some(attr) = attr_struct.as_attribute() {
+                                let current_value = attr.value.to_string();
+                                update_param_in_source(&current_value, index_key, value)?
                             } else {
-                                return Err(anyhow!("Attribute not found at position"));
+                                return Err(anyhow!("Expected attribute at position"));
                             }
                         } else {
-                            format!("\"{}\"", value)
-                        };
-
-                        // Create new attribute
-                        let new_expr: Expression = new_value_str.parse().with_context(|| {
-                            format!("Failed to parse expression: {}", new_value_str)
-                        })?;
-                        let key = Ident::new(parsed_query.attribute.clone());
-                        let new_attr = Attribute::new(key, new_expr);
-
-                        // Remove old and insert new
-                        block.body.remove(pos);
-                        block
-                            .body
-                            .try_insert(pos, new_attr)
-                            .map_err(|_| anyhow!("Failed to insert attribute"))?;
-
-                        found = true;
-                        break;
+                            return Err(anyhow!("Attribute not found at position"));
+                        }
                     } else {
-                        return Err(anyhow!(
-                            "Attribute '{}' not found in block",
-                            parsed_query.attribute
-                        ));
-                    }
+                        format!("\"{}\"", value)
+                    };
+
+                    // Create new attribute
+                    let new_expr: Expression = new_value_str.parse().with_context(|| {
+                        format!("Failed to parse expression: {}", new_value_str)
+                    })?;
+                    let key = Ident::new(parsed_query.attribute.clone());
+                    let new_attr = Attribute::new(key, new_expr);
+
+                    // Remove old and insert new
+                    block.body.remove(pos);
+                    block
+                        .body
+                        .try_insert(pos, new_attr)
+                        .map_err(|_| anyhow!("Failed to insert attribute"))?;
+
+                    found = true;
+                    break;
+                } else {
+                    return Err(anyhow!(
+                        "Attribute '{}' not found in block",
+                        parsed_query.attribute
+                    ));
                 }
             }
+        }
     }
 
     if !found {
@@ -397,7 +400,7 @@ fn update_url_in_source(source: &str, new_url: &str) -> String {
     // Keep: //path?ref=version
 
     let has_git_prefix = source.starts_with("git::");
-    
+
     // First, find where to search for path delimiter (skip protocol like https://)
     let search_start = if let Some(protocol_end) = source.find("://") {
         protocol_end + 3
@@ -446,12 +449,12 @@ fn update_path_in_source(source: &str, new_path: &str) -> String {
         let absolute_path_idx = search_start + path_idx;
         let before_path = &source[..absolute_path_idx];
         let after_path = &source[absolute_path_idx + 2..];
-        
+
         // Check if there's a query string after the path
         if let Some(query_idx) = after_path.find('?') {
             query_part = &after_path[query_idx..];
         }
-        
+
         url_part = before_path;
     } else {
         // No existing path, check for query string on the URL
@@ -464,8 +467,8 @@ fn update_path_in_source(source: &str, new_path: &str) -> String {
     // Normalize the path - remove leading slash if present
     let normalized_path = if new_path.is_empty() {
         String::new()
-    } else if new_path.starts_with('/') {
-        new_path[1..].to_string()
+    } else if let Some(stripped) = new_path.strip_prefix('/') {
+        stripped.to_string()
     } else {
         new_path.to_string()
     };
