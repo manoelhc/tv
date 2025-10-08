@@ -1,5 +1,5 @@
 module "example" {
-  source = "git::https://github.com/myorg/mymod.git//module/rds?ref=v1.0.0"
+source = "git::github.com/myorg/mymod.git//module/rds2?ref=v1.0.0"
   
   name = "test"
 }

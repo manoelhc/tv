@@ -179,7 +179,14 @@ fn extract_param_from_source(source: &str, param_name: &str) -> Result<Option<St
     // Remove quotes from source string
     let source = source.trim().trim_matches('"');
 
-    // Look for param_name=value pattern
+    // Handle special cases for "url" and "path"
+    if param_name == "url" {
+        return Ok(Some(extract_url_from_source(source)));
+    } else if param_name == "path" {
+        return Ok(extract_path_from_source(source));
+    }
+
+    // Look for param_name=value pattern in query string
     if let Some(param_start) = source.find(&format!("{}=", param_name)) {
         let value_start = param_start + param_name.len() + 1;
         let remaining = &source[value_start..];
@@ -192,6 +199,72 @@ fn extract_param_from_source(source: &str, param_name: &str) -> Result<Option<St
     }
 
     Ok(None)
+}
+
+fn extract_url_from_source(source: &str) -> String {
+    // Extract URL from various source formats
+    // Format: git::https://github.com/org/repo.git//path?ref=version
+    // or: github.com/org/repo.git//path?ref=version
+    // or: terraform-aws-modules/vpc/aws (registry)
+    // or: ./modules/vpc (local)
+
+    let mut url = source;
+
+    // Remove git:: prefix if present
+    if url.starts_with("git::") {
+        url = &url[5..];
+    }
+
+    // Remove path component (starts with // but not part of https://)
+    // We need to find // that's NOT part of the protocol
+    if let Some(protocol_end) = url.find("://") {
+        // Look for // after the protocol
+        let after_protocol = &url[protocol_end + 3..];
+        if let Some(path_idx) = after_protocol.find("//") {
+            // Found path delimiter after protocol
+            url = &url[..protocol_end + 3 + path_idx];
+        }
+    } else {
+        // No protocol, just look for //
+        if let Some(path_idx) = url.find("//") {
+            url = &url[..path_idx];
+        }
+    }
+
+    // Remove query string (starts with ?)
+    if let Some(query_idx) = url.find('?') {
+        url = &url[..query_idx];
+    }
+
+    url.to_string()
+}
+
+fn extract_path_from_source(source: &str) -> Option<String> {
+    // Extract path from git sources
+    // Format: git::https://github.com/org/repo.git//path?ref=version
+    // Path starts after // (but not the // in https://) and ends at ? or end of string
+
+    // First, skip past any protocol (like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else {
+        0
+    };
+
+    if let Some(path_start) = source[search_start..].find("//") {
+        let path_begin = search_start + path_start + 2;
+        let remaining = &source[path_begin..];
+        
+        // Path ends at query string or end of string
+        let path_end = remaining.find('?').unwrap_or(remaining.len());
+        let path = &remaining[..path_end];
+        
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+
+    None
 }
 
 fn set_value(query: &str, value: &str, file: Option<&std::path::Path>) -> Result<()> {
@@ -287,7 +360,14 @@ fn update_param_in_source(source: &str, param_name: &str, new_value: &str) -> Re
     // Remove quotes from source string
     let source = source.trim().trim_matches('"');
 
-    // Look for param_name=value pattern
+    // Handle special cases for "url" and "path"
+    if param_name == "url" {
+        return Ok(format!("\"{}\"", update_url_in_source(source, new_value)));
+    } else if param_name == "path" {
+        return Ok(format!("\"{}\"", update_path_in_source(source, new_value)));
+    }
+
+    // Look for param_name=value pattern in query string
     if let Some(param_start) = source.find(&format!("{}=", param_name)) {
         let value_start = param_start + param_name.len() + 1;
         let remaining = &source[value_start..];
@@ -303,10 +383,96 @@ fn update_param_in_source(source: &str, param_name: &str, new_value: &str) -> Re
         return Ok(format!("\"{}\"", result));
     }
 
-    // If parameter doesn't exist, add it
+    // If parameter doesn't exist, add it to query string
     let separator = if source.contains('?') { "&" } else { "?" };
     Ok(format!(
         "\"{}{}{}={}\"",
         source, separator, param_name, new_value
     ))
+}
+
+fn update_url_in_source(source: &str, new_url: &str) -> String {
+    // Replace URL part while preserving path and query string
+    // Original: git::https://github.com/org/repo.git//path?ref=version
+    // Keep: //path?ref=version
+
+    let has_git_prefix = source.starts_with("git::");
+    
+    // First, find where to search for path delimiter (skip protocol like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else {
+        0
+    };
+
+    // Extract path and query components (everything after the URL)
+    let remaining_part = if let Some(path_idx) = source[search_start..].find("//") {
+        // Found path delimiter
+        &source[search_start + path_idx..]
+    } else {
+        // No path, check for query string
+        if let Some(query_idx) = source.find('?') {
+            &source[query_idx..]
+        } else {
+            ""
+        }
+    };
+
+    // Reconstruct with new URL
+    if has_git_prefix {
+        format!("git::{}{}", new_url, remaining_part)
+    } else {
+        format!("{}{}", new_url, remaining_part)
+    }
+}
+
+fn update_path_in_source(source: &str, new_path: &str) -> String {
+    // Replace path part while preserving URL and query string
+    // Original: git::https://github.com/org/repo.git//path?ref=version
+    // Keep: git::https://github.com/org/repo.git and ?ref=version
+
+    // First, find where to search for path delimiter (skip protocol like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else {
+        0
+    };
+
+    let mut url_part = source;
+    let mut query_part = "";
+
+    // Look for path delimiter after protocol
+    if let Some(path_idx) = source[search_start..].find("//") {
+        let absolute_path_idx = search_start + path_idx;
+        let before_path = &source[..absolute_path_idx];
+        let after_path = &source[absolute_path_idx + 2..];
+        
+        // Check if there's a query string after the path
+        if let Some(query_idx) = after_path.find('?') {
+            query_part = &after_path[query_idx..];
+        }
+        
+        url_part = before_path;
+    } else {
+        // No existing path, check for query string on the URL
+        if let Some(query_idx) = source.find('?') {
+            query_part = &source[query_idx..];
+            url_part = &source[..query_idx];
+        }
+    }
+
+    // Normalize the path - remove leading slash if present
+    let normalized_path = if new_path.is_empty() {
+        String::new()
+    } else if new_path.starts_with('/') {
+        new_path[1..].to_string()
+    } else {
+        new_path.to_string()
+    };
+
+    if normalized_path.is_empty() {
+        format!("{}{}", url_part, query_part)
+    } else {
+        format!("{}//{}{}", url_part, normalized_path, query_part)
+    }
 }
