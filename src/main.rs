@@ -210,35 +210,40 @@ fn extract_url_from_source(source: &str) -> String {
     // or: terraform-aws-modules/vpc/aws (registry)
     // or: ./modules/vpc (local)
 
-    let mut url = source;
+    // Keep the git:: prefix if present
+    let url_start = source;
+    let search_start = if source.starts_with("git::") {
+        // Skip the git:: prefix for searching but include it in result
+        5
+    } else {
+        0
+    };
 
-    // Remove git:: prefix if present
-    if url.starts_with("git::") {
-        url = &url[5..];
-    }
+    let mut url_end = source.len();
 
     // Remove path component (starts with // but not part of https://)
     // We need to find // that's NOT part of the protocol
-    if let Some(protocol_end) = url.find("://") {
+    if let Some(protocol_end) = source[search_start..].find("://") {
         // Look for // after the protocol
-        let after_protocol = &url[protocol_end + 3..];
+        let absolute_protocol_end = search_start + protocol_end + 3;
+        let after_protocol = &source[absolute_protocol_end..];
         if let Some(path_idx) = after_protocol.find("//") {
             // Found path delimiter after protocol
-            url = &url[..protocol_end + 3 + path_idx];
+            url_end = absolute_protocol_end + path_idx;
         }
     } else {
         // No protocol, just look for //
-        if let Some(path_idx) = url.find("//") {
-            url = &url[..path_idx];
+        if let Some(path_idx) = source[search_start..].find("//") {
+            url_end = search_start + path_idx;
         }
     }
 
-    // Remove query string (starts with ?)
-    if let Some(query_idx) = url.find('?') {
-        url = &url[..query_idx];
+    // Check if there's a query string before the path delimiter
+    if let Some(query_idx) = source[..url_end].find('?') {
+        url_end = query_idx;
     }
 
-    url.to_string()
+    url_start[..url_end].to_string()
 }
 
 fn extract_path_from_source(source: &str) -> Option<String> {
@@ -397,13 +402,17 @@ fn update_param_in_source(source: &str, param_name: &str, new_value: &str) -> Re
 fn update_url_in_source(source: &str, new_url: &str) -> String {
     // Replace URL part while preserving path and query string
     // Original: git::https://github.com/org/repo.git//path?ref=version
-    // Keep: //path?ref=version
-
-    let has_git_prefix = source.starts_with("git::");
+    // New URL: github.com/myorg/mymod.git
+    // Result: github.com/myorg/mymod.git//path?ref=version
+    //
+    // The new URL replaces the entire URL including the git:: prefix if present
 
     // First, find where to search for path delimiter (skip protocol like https://)
     let search_start = if let Some(protocol_end) = source.find("://") {
         protocol_end + 3
+    } else if source.starts_with("git::") {
+        // If there's git:: but no protocol after it, search after git::
+        5
     } else {
         0
     };
@@ -421,12 +430,8 @@ fn update_url_in_source(source: &str, new_url: &str) -> String {
         }
     };
 
-    // Reconstruct with new URL
-    if has_git_prefix {
-        format!("git::{}{}", new_url, remaining_part)
-    } else {
-        format!("{}{}", new_url, remaining_part)
-    }
+    // Reconstruct with new URL (which may or may not have git:: prefix)
+    format!("{}{}", new_url, remaining_part)
 }
 
 fn update_path_in_source(source: &str, new_path: &str) -> String {
