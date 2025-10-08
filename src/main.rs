@@ -143,33 +143,35 @@ fn get_value(query: &str, file: Option<&std::path::Path>) -> Result<Option<Strin
     // Find the block
     for structure in body.iter() {
         if let Some(block) = structure.as_block()
-            && block.ident.as_str() == parsed_query.block_type {
-                // Check labels
-                let labels: Vec<String> = block
-                    .labels
-                    .iter()
-                    .map(|l| l.as_str())
-                    .map(|s| s.to_string())
-                    .collect();
+            && block.ident.as_str() == parsed_query.block_type
+        {
+            // Check labels
+            let labels: Vec<String> = block
+                .labels
+                .iter()
+                .map(|l| l.as_str())
+                .map(|s| s.to_string())
+                .collect();
 
-                if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
-                    // Find the attribute
-                    for attr_item in block.body.iter() {
-                        if let Some(attr) = attr_item.as_attribute()
-                            && attr.key.as_str() == parsed_query.attribute {
-                                let value_str = attr.value.to_string();
+            if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
+                // Find the attribute
+                for attr_item in block.body.iter() {
+                    if let Some(attr) = attr_item.as_attribute()
+                        && attr.key.as_str() == parsed_query.attribute
+                    {
+                        let value_str = attr.value.to_string();
 
-                                if let Some(ref index_key) = parsed_query.index {
-                                    // Need to extract the value from the string
-                                    // Looking for key=value pattern in the source string
-                                    return extract_param_from_source(&value_str, index_key);
-                                }
+                        if let Some(ref index_key) = parsed_query.index {
+                            // Need to extract the value from the string
+                            // Looking for key=value pattern in the source string
+                            return extract_param_from_source(&value_str, index_key);
+                        }
 
-                                return Ok(Some(value_str.trim().trim_matches('"').to_string()));
-                            }
+                        return Ok(Some(value_str.trim().trim_matches('"').to_string()));
                     }
                 }
             }
+        }
     }
 
     Ok(None)
@@ -179,7 +181,14 @@ fn extract_param_from_source(source: &str, param_name: &str) -> Result<Option<St
     // Remove quotes from source string
     let source = source.trim().trim_matches('"');
 
-    // Look for param_name=value pattern
+    // Handle special cases for "url" and "path"
+    if param_name == "url" {
+        return Ok(Some(extract_url_from_source(source)));
+    } else if param_name == "path" {
+        return Ok(extract_path_from_source(source));
+    }
+
+    // Look for param_name=value pattern in query string
     if let Some(param_start) = source.find(&format!("{}=", param_name)) {
         let value_start = param_start + param_name.len() + 1;
         let remaining = &source[value_start..];
@@ -192,6 +201,77 @@ fn extract_param_from_source(source: &str, param_name: &str) -> Result<Option<St
     }
 
     Ok(None)
+}
+
+fn extract_url_from_source(source: &str) -> String {
+    // Extract URL from various source formats
+    // Format: git::https://github.com/org/repo.git//path?ref=version
+    // or: github.com/org/repo.git//path?ref=version
+    // or: terraform-aws-modules/vpc/aws (registry)
+    // or: ./modules/vpc (local)
+
+    // Keep the git:: prefix if present
+    let url_start = source;
+    let search_start = if source.starts_with("git::") {
+        // Skip the git:: prefix for searching but include it in result
+        5
+    } else {
+        0
+    };
+
+    let mut url_end = source.len();
+
+    // Remove path component (starts with // but not part of https://)
+    // We need to find // that's NOT part of the protocol
+    if let Some(protocol_end) = source[search_start..].find("://") {
+        // Look for // after the protocol
+        let absolute_protocol_end = search_start + protocol_end + 3;
+        let after_protocol = &source[absolute_protocol_end..];
+        if let Some(path_idx) = after_protocol.find("//") {
+            // Found path delimiter after protocol
+            url_end = absolute_protocol_end + path_idx;
+        }
+    } else {
+        // No protocol, just look for //
+        if let Some(path_idx) = source[search_start..].find("//") {
+            url_end = search_start + path_idx;
+        }
+    }
+
+    // Check if there's a query string before the path delimiter
+    if let Some(query_idx) = source[..url_end].find('?') {
+        url_end = query_idx;
+    }
+
+    url_start[..url_end].to_string()
+}
+
+fn extract_path_from_source(source: &str) -> Option<String> {
+    // Extract path from git sources
+    // Format: git::https://github.com/org/repo.git//path?ref=version
+    // Path starts after // (but not the // in https://) and ends at ? or end of string
+
+    // First, skip past any protocol (like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else {
+        0
+    };
+
+    if let Some(path_start) = source[search_start..].find("//") {
+        let path_begin = search_start + path_start + 2;
+        let remaining = &source[path_begin..];
+
+        // Path ends at query string or end of string
+        let path_end = remaining.find('?').unwrap_or(remaining.len());
+        let path = &remaining[..path_end];
+
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+
+    None
 }
 
 fn set_value(query: &str, value: &str, file: Option<&std::path::Path>) -> Result<()> {
@@ -209,65 +289,66 @@ fn set_value(query: &str, value: &str, file: Option<&std::path::Path>) -> Result
     let mut found = false;
     for mut structure in body.iter_mut() {
         if let Some(block) = structure.as_block_mut()
-            && block.ident.as_str() == parsed_query.block_type {
-                // Check labels
-                let labels: Vec<String> = block
-                    .labels
-                    .iter()
-                    .map(|l| l.as_str())
-                    .map(|s| s.to_string())
-                    .collect();
+            && block.ident.as_str() == parsed_query.block_type
+        {
+            // Check labels
+            let labels: Vec<String> = block
+                .labels
+                .iter()
+                .map(|l| l.as_str())
+                .map(|s| s.to_string())
+                .collect();
 
-                if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
-                    // Find the attribute position
-                    let pos = block.body.iter().position(|s| {
-                        s.as_attribute()
-                            .map(|a| a.key.as_str() == parsed_query.attribute)
-                            .unwrap_or(false)
-                    });
+            if labels.first().map(|s| s.as_str()) == Some(&parsed_query.block_label) {
+                // Find the attribute position
+                let pos = block.body.iter().position(|s| {
+                    s.as_attribute()
+                        .map(|a| a.key.as_str() == parsed_query.attribute)
+                        .unwrap_or(false)
+                });
 
-                    if let Some(pos) = pos {
-                        // Get current value if we need to modify a parameter
-                        let new_value_str = if let Some(ref index_key) = parsed_query.index {
-                            // Get the current value
-                            if let Some(attr_struct) = block.body.get(pos) {
-                                if let Some(attr) = attr_struct.as_attribute() {
-                                    let current_value = attr.value.to_string();
-                                    update_param_in_source(&current_value, index_key, value)?
-                                } else {
-                                    return Err(anyhow!("Expected attribute at position"));
-                                }
+                if let Some(pos) = pos {
+                    // Get current value if we need to modify a parameter
+                    let new_value_str = if let Some(ref index_key) = parsed_query.index {
+                        // Get the current value
+                        if let Some(attr_struct) = block.body.get(pos) {
+                            if let Some(attr) = attr_struct.as_attribute() {
+                                let current_value = attr.value.to_string();
+                                update_param_in_source(&current_value, index_key, value)?
                             } else {
-                                return Err(anyhow!("Attribute not found at position"));
+                                return Err(anyhow!("Expected attribute at position"));
                             }
                         } else {
-                            format!("\"{}\"", value)
-                        };
-
-                        // Create new attribute
-                        let new_expr: Expression = new_value_str.parse().with_context(|| {
-                            format!("Failed to parse expression: {}", new_value_str)
-                        })?;
-                        let key = Ident::new(parsed_query.attribute.clone());
-                        let new_attr = Attribute::new(key, new_expr);
-
-                        // Remove old and insert new
-                        block.body.remove(pos);
-                        block
-                            .body
-                            .try_insert(pos, new_attr)
-                            .map_err(|_| anyhow!("Failed to insert attribute"))?;
-
-                        found = true;
-                        break;
+                            return Err(anyhow!("Attribute not found at position"));
+                        }
                     } else {
-                        return Err(anyhow!(
-                            "Attribute '{}' not found in block",
-                            parsed_query.attribute
-                        ));
-                    }
+                        format!("\"{}\"", value)
+                    };
+
+                    // Create new attribute
+                    let new_expr: Expression = new_value_str.parse().with_context(|| {
+                        format!("Failed to parse expression: {}", new_value_str)
+                    })?;
+                    let key = Ident::new(parsed_query.attribute.clone());
+                    let new_attr = Attribute::new(key, new_expr);
+
+                    // Remove old and insert new
+                    block.body.remove(pos);
+                    block
+                        .body
+                        .try_insert(pos, new_attr)
+                        .map_err(|_| anyhow!("Failed to insert attribute"))?;
+
+                    found = true;
+                    break;
+                } else {
+                    return Err(anyhow!(
+                        "Attribute '{}' not found in block",
+                        parsed_query.attribute
+                    ));
                 }
             }
+        }
     }
 
     if !found {
@@ -287,7 +368,14 @@ fn update_param_in_source(source: &str, param_name: &str, new_value: &str) -> Re
     // Remove quotes from source string
     let source = source.trim().trim_matches('"');
 
-    // Look for param_name=value pattern
+    // Handle special cases for "url" and "path"
+    if param_name == "url" {
+        return Ok(format!("\"{}\"", update_url_in_source(source, new_value)));
+    } else if param_name == "path" {
+        return Ok(format!("\"{}\"", update_path_in_source(source, new_value)));
+    }
+
+    // Look for param_name=value pattern in query string
     if let Some(param_start) = source.find(&format!("{}=", param_name)) {
         let value_start = param_start + param_name.len() + 1;
         let remaining = &source[value_start..];
@@ -303,10 +391,96 @@ fn update_param_in_source(source: &str, param_name: &str, new_value: &str) -> Re
         return Ok(format!("\"{}\"", result));
     }
 
-    // If parameter doesn't exist, add it
+    // If parameter doesn't exist, add it to query string
     let separator = if source.contains('?') { "&" } else { "?" };
     Ok(format!(
         "\"{}{}{}={}\"",
         source, separator, param_name, new_value
     ))
+}
+
+fn update_url_in_source(source: &str, new_url: &str) -> String {
+    // Replace URL part while preserving path and query string
+    // Original: git::https://github.com/org/repo.git//path?ref=version
+    // New URL: github.com/myorg/mymod.git
+    // Result: github.com/myorg/mymod.git//path?ref=version
+    //
+    // The new URL replaces the entire URL including the git:: prefix if present
+
+    // First, find where to search for path delimiter (skip protocol like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else if source.starts_with("git::") {
+        // If there's git:: but no protocol after it, search after git::
+        5
+    } else {
+        0
+    };
+
+    // Extract path and query components (everything after the URL)
+    let remaining_part = if let Some(path_idx) = source[search_start..].find("//") {
+        // Found path delimiter
+        &source[search_start + path_idx..]
+    } else {
+        // No path, check for query string
+        if let Some(query_idx) = source.find('?') {
+            &source[query_idx..]
+        } else {
+            ""
+        }
+    };
+
+    // Reconstruct with new URL (which may or may not have git:: prefix)
+    format!("{}{}", new_url, remaining_part)
+}
+
+fn update_path_in_source(source: &str, new_path: &str) -> String {
+    // Replace path part while preserving URL and query string
+    // Original: git::https://github.com/org/repo.git//path?ref=version
+    // Keep: git::https://github.com/org/repo.git and ?ref=version
+
+    // First, find where to search for path delimiter (skip protocol like https://)
+    let search_start = if let Some(protocol_end) = source.find("://") {
+        protocol_end + 3
+    } else {
+        0
+    };
+
+    let mut url_part = source;
+    let mut query_part = "";
+
+    // Look for path delimiter after protocol
+    if let Some(path_idx) = source[search_start..].find("//") {
+        let absolute_path_idx = search_start + path_idx;
+        let before_path = &source[..absolute_path_idx];
+        let after_path = &source[absolute_path_idx + 2..];
+
+        // Check if there's a query string after the path
+        if let Some(query_idx) = after_path.find('?') {
+            query_part = &after_path[query_idx..];
+        }
+
+        url_part = before_path;
+    } else {
+        // No existing path, check for query string on the URL
+        if let Some(query_idx) = source.find('?') {
+            query_part = &source[query_idx..];
+            url_part = &source[..query_idx];
+        }
+    }
+
+    // Normalize the path - remove leading slash if present
+    let normalized_path = if new_path.is_empty() {
+        String::new()
+    } else if let Some(stripped) = new_path.strip_prefix('/') {
+        stripped.to_string()
+    } else {
+        new_path.to_string()
+    };
+
+    if normalized_path.is_empty() {
+        format!("{}{}", url_part, query_part)
+    } else {
+        format!("{}//{}{}", url_part, normalized_path, query_part)
+    }
 }
