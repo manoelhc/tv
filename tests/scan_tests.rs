@@ -235,3 +235,19 @@ fn test_scan_specific_module_in_multi_module_file() {
     let results_vpc = scan_files("module.vpc", temp_dir.path()).unwrap();
     assert_eq!(results_vpc.len(), 1);
 }
+
+#[test]
+fn test_scan_returns_module_names() {
+    let files = vec![
+        ("main.tf", common::MULTIPLE_MODULES_TF),
+    ];
+    let temp_dir = common::create_test_dir_with_files(&files);
+    
+    let results = scan_files("module.*", temp_dir.path()).unwrap();
+    assert_eq!(results.len(), 2);
+    
+    // Verify that module names are returned
+    let module_names: Vec<String> = results.iter().map(|(_, name)| name.clone()).collect();
+    assert!(module_names.contains(&"vpc".to_string()));
+    assert!(module_names.contains(&"eks".to_string()));
+}
