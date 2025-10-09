@@ -6,6 +6,7 @@ use tv::{get_value, set_value, scan_files};
 #[derive(Parser)]
 #[command(name = "tv")]
 #[command(about = "Terraform Version control - manage module versions in .tf files", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
