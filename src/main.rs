@@ -61,9 +61,9 @@ fn main() -> Result<()> {
             set_value(&query, &value, file.as_deref())?;
         }
         Commands::Scan { query, dir } => {
-            let files = scan_files(&query, &dir)?;
-            for file in files {
-                println!("{}", file.display());
+            let results = scan_files(&query, &dir)?;
+            for (file, module_name) in results {
+                println!("\"{}\": \"module.{}\"", file.display(), module_name);
             }
         }
     }

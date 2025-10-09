@@ -1020,28 +1020,31 @@ pub fn find_all_tf_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     Ok(tf_files)
 }
 
-pub fn scan_files(query: &str, dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+pub fn scan_files(query: &str, dir: &std::path::Path) -> Result<Vec<(PathBuf, String)>> {
     let scan_query = parse_scan_query(query)?;
     let tf_files = find_all_tf_files(dir)?;
     
-    let mut matching_files = Vec::new();
+    let mut results = Vec::new();
     
     for file_path in tf_files {
-        if matches_query(&file_path, &scan_query)? {
-            matching_files.push(file_path);
+        let module_names = find_matching_modules(&file_path, &scan_query)?;
+        for module_name in module_names {
+            results.push((file_path.clone(), module_name));
         }
     }
     
-    Ok(matching_files)
+    Ok(results)
 }
 
-fn matches_query(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<bool> {
+fn find_matching_modules(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<Vec<String>> {
     let content = fs::read_to_string(file_path)
         .with_context(|| format!("Failed to read file: {:?}", file_path))?;
     
     let body: Body = content
         .parse()
         .with_context(|| format!("Failed to parse HCL: {:?}", file_path))?;
+    
+    let mut matching_modules = Vec::new();
     
     // Look for blocks matching the query
     for structure in body.iter() {
@@ -1050,27 +1053,38 @@ fn matches_query(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<
                 continue;
             }
             
+            // Get the block label (module name for module blocks)
+            let labels: Vec<String> = block
+                .labels
+                .iter()
+                .map(|l| l.as_str().to_string())
+                .collect();
+            
+            let block_label = labels.first().map(|s| s.as_str());
+            
             // Check block label if specified
             if let Some(ref expected_label) = scan_query.block_label {
-                let labels: Vec<String> = block
-                    .labels
-                    .iter()
-                    .map(|l| l.as_str().to_string())
-                    .collect();
-                
-                if labels.first().map(|s| s.as_str()) != Some(expected_label.as_str()) {
+                if block_label != Some(expected_label.as_str()) {
                     continue;
                 }
             }
             
             // If no nested blocks or attribute specified, we found a match
             if scan_query.nested_blocks.is_empty() && scan_query.attribute.is_none() {
-                return Ok(true);
+                // For blocks with labels (like modules), use the label
+                // For blocks without labels (like terraform), use the block type
+                if let Some(label) = block_label {
+                    matching_modules.push(label.to_string());
+                } else {
+                    matching_modules.push(scan_query.block_type.clone());
+                }
+                continue;
             }
             
             // Navigate through nested blocks
             let mut current_body = &block.body;
             
+            let mut nested_matched = true;
             for nested_name in &scan_query.nested_blocks {
                 let mut found_this_level = false;
                 
@@ -1085,9 +1099,13 @@ fn matches_query(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<
                 }
                 
                 if !found_this_level {
-                    // Couldn't find nested block, so this file doesn't match
-                    return Ok(false);
+                    nested_matched = false;
+                    break;
                 }
+            }
+            
+            if !nested_matched {
+                continue;
             }
             
             // Check attribute if specified
@@ -1103,18 +1121,29 @@ fn matches_query(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<
                                 }
                             }
                             
-                            return Ok(true);
+                            // For blocks with labels, use the label
+                            // For blocks without labels, use the block type
+                            if let Some(label) = block_label {
+                                matching_modules.push(label.to_string());
+                            } else {
+                                matching_modules.push(scan_query.block_type.clone());
+                            }
+                            break;
                         }
                     }
                 }
             } else {
                 // No specific attribute required, nested blocks matched
-                return Ok(true);
+                if let Some(label) = block_label {
+                    matching_modules.push(label.to_string());
+                } else {
+                    matching_modules.push(scan_query.block_type.clone());
+                }
             }
         }
     }
     
-    Ok(false)
+    Ok(matching_modules)
 }
 
 fn matches_filter(value_str: &str, filter: &AttributeFilter) -> Result<bool> {

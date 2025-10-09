@@ -219,7 +219,7 @@ fn test_scan_multiple_modules_in_one_file() {
     let temp_dir = common::create_test_dir_with_files(&files);
     
     let results = scan_files("module.*", temp_dir.path()).unwrap();
-    assert_eq!(results.len(), 1); // One file with multiple modules
+    assert_eq!(results.len(), 2); // Two modules in one file
 }
 
 #[test]
