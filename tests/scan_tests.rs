@@ -121,6 +121,38 @@ fn test_scan_with_path_filter() {
 }
 
 #[test]
+fn test_scan_with_wildcard_url_filter() {
+    let files = vec![
+        ("main.tf", common::SIMPLE_MODULE_TF),
+        ("other.tf", common::MODULE_WITH_PATH_TF),
+    ];
+    let temp_dir = common::create_test_dir_with_files(&files);
+    
+    // Test wildcard matching with *
+    let results = scan_files(
+        "module.*.source[url==\"*terraform-aws-modules*vpc*\"]",
+        temp_dir.path()
+    ).unwrap();
+    assert_eq!(results.len(), 1); // Should match SIMPLE_MODULE_TF which has terraform-aws-modules/terraform-aws-vpc
+}
+
+#[test]
+fn test_scan_with_wildcard_ref_filter() {
+    let files = vec![
+        ("main.tf", common::SIMPLE_MODULE_TF),
+        ("other.tf", common::MODULE_WITH_PATH_TF),
+    ];
+    let temp_dir = common::create_test_dir_with_files(&files);
+    
+    // Test wildcard matching with ref
+    let results = scan_files(
+        "module.*.source[ref==\"v*.0.0\"]",
+        temp_dir.path()
+    ).unwrap();
+    assert_eq!(results.len(), 2); // Both have v*.0.0 pattern
+}
+
+#[test]
 fn test_scan_nested_directories() {
     let files = vec![
         ("main.tf", common::SIMPLE_MODULE_TF),
@@ -219,7 +251,7 @@ fn test_scan_multiple_modules_in_one_file() {
     let temp_dir = common::create_test_dir_with_files(&files);
     
     let results = scan_files("module.*", temp_dir.path()).unwrap();
-    assert_eq!(results.len(), 1); // One file with multiple modules
+    assert_eq!(results.len(), 2); // Two modules in one file
 }
 
 #[test]
@@ -234,4 +266,20 @@ fn test_scan_specific_module_in_multi_module_file() {
     
     let results_vpc = scan_files("module.vpc", temp_dir.path()).unwrap();
     assert_eq!(results_vpc.len(), 1);
+}
+
+#[test]
+fn test_scan_returns_module_names() {
+    let files = vec![
+        ("main.tf", common::MULTIPLE_MODULES_TF),
+    ];
+    let temp_dir = common::create_test_dir_with_files(&files);
+    
+    let results = scan_files("module.*", temp_dir.path()).unwrap();
+    assert_eq!(results.len(), 2);
+    
+    // Verify that module names are returned
+    let module_names: Vec<String> = results.iter().map(|(_, name)| name.clone()).collect();
+    assert!(module_names.contains(&"vpc".to_string()));
+    assert!(module_names.contains(&"eks".to_string()));
 }
