@@ -1151,8 +1151,61 @@ fn matches_filter(value_str: &str, filter: &AttributeFilter) -> Result<bool> {
     let extracted = extract_param_from_source(value_str, &filter.attribute)?;
     
     if let Some(extracted_value) = extracted {
-        Ok(extracted_value == filter.value)
+        Ok(wildcard_match(&filter.value, &extracted_value))
     } else {
         Ok(false)
     }
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    // Simple wildcard matching with * as wildcard
+    // If no wildcards, do exact match
+    if !pattern.contains('*') {
+        return pattern == text;
+    }
+    
+    let parts: Vec<&str> = pattern.split('*').collect();
+    
+    // Handle edge cases
+    if parts.is_empty() {
+        return true;
+    }
+    
+    let mut text_pos = 0;
+    
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        
+        // First part must match at the beginning (unless pattern starts with *)
+        if i == 0 && !pattern.starts_with('*') {
+            if !text[text_pos..].starts_with(part) {
+                return false;
+            }
+            text_pos += part.len();
+        }
+        // Last part must match at the end (unless pattern ends with *)
+        else if i == parts.len() - 1 && !pattern.ends_with('*') {
+            if !text[text_pos..].ends_with(part) {
+                return false;
+            }
+            // Move position to the end
+            if let Some(pos) = text[text_pos..].rfind(part) {
+                text_pos += pos + part.len();
+            } else {
+                return false;
+            }
+        }
+        // Middle parts can be anywhere after current position
+        else {
+            if let Some(pos) = text[text_pos..].find(part) {
+                text_pos += pos + part.len();
+            } else {
+                return false;
+            }
+        }
+    }
+    
+    true
 }
