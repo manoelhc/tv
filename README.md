@@ -1,7 +1,7 @@
 # tv
 Terraform Version control
 
-A CLI tool for managing Terraform module versions in .tf files.
+A CLI tool for managing Terraform module and provider versions in .tf files.
 
 ## Installation
 
