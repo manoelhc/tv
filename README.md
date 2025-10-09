@@ -39,7 +39,29 @@ Set a simple attribute value:
 tv set 'module.example.variable' new_value --file example.tf
 ```
 
+### Scan for files
+
+Scan for .tf files that match a query pattern:
+
+```bash
+tv scan 'module.*' --dir .
+```
+
+Scan for files with specific attributes:
+
+```bash
+tv scan 'terraform.required_providers.aws' --dir .
+```
+
+Scan with filters:
+
+```bash
+tv scan 'module.*.source[url=="git::https://github.com/example/repo.git"]' --dir .
+```
+
 ## Query Syntax
+
+### For Get and Set Commands
 
 Queries follow the pattern: `block_type.block_label.attribute["index"]`
 
@@ -48,6 +70,21 @@ Examples:
 - `module.example.source["url"]` - Get/set the URL part of the `source` attribute
 - `module.example.source["path"]` - Get/set the path part of the `source` attribute (for git sources with subdirectories)
 - `module.example.variable` - Get/set the `variable` attribute of the `example` module
+
+### For Scan Command
+
+Scan queries support wildcards (`*`) and filters:
+
+Examples:
+- `module.*` - Find all files with any module block
+- `module.vpc` - Find files with a specific module named "vpc"
+- `module.*.source` - Find files with modules that have a `source` attribute
+- `module.*.version` - Find files with modules that have a `version` attribute
+- `terraform.required_providers.*` - Find files with any required provider in terraform block
+- `terraform.required_providers.aws` - Find files with AWS provider requirement
+- `module.*.source[url=="git::https://github.com/example/repo.git"]` - Find modules with specific source URL
+- `module.*.source[ref=="v1.0.0"]` - Find modules with specific version ref
+- `module.*.source[path=="modules/vpc"]` - Find modules with specific subdirectory path
 
 ## Examples
 
@@ -119,4 +156,50 @@ terraform-aws-modules/vpc/aws
 
 $ tv get 'module.vpc.version' --file main.tf
 5.0.0
+```
+
+### Scanning for Terraform Files
+
+The `scan` command helps you find .tf files that match specific patterns across your codebase.
+
+#### Find all files with modules:
+```bash
+$ tv scan 'module.*' --dir .
+./modules/networking/main.tf
+./modules/compute/main.tf
+./main.tf
+```
+
+#### Find files with specific provider requirements:
+```bash
+$ tv scan 'terraform.required_providers.aws' --dir .
+./main.tf
+./modules/networking/main.tf
+```
+
+#### Find files with any required provider:
+```bash
+$ tv scan 'terraform.required_providers.*' --dir .
+./main.tf
+./modules/networking/main.tf
+./modules/compute/main.tf
+```
+
+#### Find modules with specific source URL:
+```bash
+$ tv scan 'module.*.source[url=="git::https://github.com/example/repo.git"]' --dir .
+./main.tf
+./modules/vpc/main.tf
+```
+
+#### Find modules with specific version:
+```bash
+$ tv scan 'module.*.source[ref=="v1.0.0"]' --dir .
+./modules/vpc/main.tf
+```
+
+#### Find modules with version attribute (registry modules):
+```bash
+$ tv scan 'module.*.version' --dir .
+./modules/rds/main.tf
 ```
