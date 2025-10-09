@@ -37,6 +37,14 @@ enum Commands {
         #[arg(short, long)]
         file: Option<PathBuf>,
     },
+    /// Scan for .tf files that match a query pattern
+    Scan {
+        /// Query pattern (e.g., module.*, terraform.required_providers.aws)
+        query: String,
+        /// Directory to scan (defaults to current directory)
+        #[arg(short, long, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -53,6 +61,12 @@ fn main() -> Result<()> {
         }
         Commands::Set { query, value, file } => {
             set_value(&query, &value, file.as_deref())?;
+        }
+        Commands::Scan { query, dir } => {
+            let files = scan_files(&query, &dir)?;
+            for file in files {
+                println!("{}", file.display());
+            }
         }
     }
 
@@ -895,5 +909,288 @@ fn update_path_in_source(source: &str, new_path: &str) -> String {
         format!("{}{}", url_part, query_part)
     } else {
         format!("{}//{}{}", url_part, normalized_path, query_part)
+    }
+}
+
+#[derive(Debug)]
+struct ScanQuery {
+    block_type: String,
+    block_label: Option<String>,  // None means wildcard
+    nested_blocks: Vec<String>,
+    attribute: Option<String>,  // None if we're just matching the block
+    filter: Option<AttributeFilter>,
+}
+
+#[derive(Debug)]
+struct AttributeFilter {
+    attribute: String,
+    value: String,
+}
+
+fn parse_scan_query(query: &str) -> Result<ScanQuery> {
+    // Expected formats:
+    // - module.* (all modules)
+    // - module.vpc.source (specific module with attribute)
+    // - terraform.required_providers.* (terraform block with nested required_providers)
+    // - terraform.required_providers.aws (specific provider)
+    // - module.*.source[url=="https://..."] (with filter)
+    
+    // First check if there's a filter
+    let (query_part, filter) = if let Some(bracket_start) = query.find('[') {
+        let bracket_end = query.find(']')
+            .ok_or_else(|| anyhow!("Unclosed bracket in query"))?;
+        let filter_str = &query[bracket_start + 1..bracket_end];
+        let query_before_filter = &query[..bracket_start];
+        
+        // Parse filter: e.g., url=="https://..." or ref=="v1.0.0"
+        let filter = parse_attribute_filter(filter_str)?;
+        (query_before_filter, Some(filter))
+    } else {
+        (query, None)
+    };
+    
+    let parts: Vec<&str> = query_part.split('.').collect();
+    if parts.is_empty() {
+        return Err(anyhow!("Query cannot be empty"));
+    }
+    
+    let block_type = parts[0].to_string();
+    
+    if parts.len() == 1 {
+        // Just block type: "module" or "terraform"
+        return Ok(ScanQuery {
+            block_type,
+            block_label: None,
+            nested_blocks: vec![],
+            attribute: None,
+            filter,
+        });
+    }
+    
+    // Parse remaining parts
+    let remaining = &parts[1..];
+    
+    // Determine if block_type typically has labels (like "module") or not (like "terraform")
+    let block_has_labels = block_type == "module" || block_type == "resource" || block_type == "data";
+    
+    let (block_label, content_start) = if block_has_labels {
+        // For module/resource/data, second part is label (or wildcard)
+        if remaining[0] == "*" {
+            (None, 1)  // Wildcard label
+        } else {
+            (Some(remaining[0].to_string()), 1)
+        }
+    } else {
+        // For terraform/variable/output/etc, no label
+        (None, 0)
+    };
+    
+    // Handle rest as nested blocks and/or attribute
+    if content_start < remaining.len() {
+        let rest_parts: Vec<String> = remaining[content_start..].iter().map(|s| s.to_string()).collect();
+        
+        // Last part could be attribute or wildcard
+        if rest_parts.is_empty() {
+            // No more parts after label
+            Ok(ScanQuery {
+                block_type,
+                block_label,
+                nested_blocks: vec![],
+                attribute: None,
+                filter,
+            })
+        } else if rest_parts.last().map(|s| s.as_str()) == Some("*") {
+            // Ends with wildcard - all parts are nested blocks/paths
+            let nested = rest_parts[..rest_parts.len()-1].to_vec();
+            Ok(ScanQuery {
+                block_type,
+                block_label: None,  // Wildcard at end means any label
+                nested_blocks: nested,
+                attribute: None,
+                filter,
+            })
+        } else {
+            // Last part is specific attribute
+            let attribute = rest_parts.last().unwrap().clone();
+            let nested = if rest_parts.len() > 1 {
+                rest_parts[..rest_parts.len()-1].to_vec()
+            } else {
+                vec![]
+            };
+            
+            Ok(ScanQuery {
+                block_type,
+                block_label,
+                nested_blocks: nested,
+                attribute: Some(attribute),
+                filter,
+            })
+        }
+    } else {
+        // No rest parts - just block type and label/wildcard
+        Ok(ScanQuery {
+            block_type,
+            block_label,
+            nested_blocks: vec![],
+            attribute: None,
+            filter,
+        })
+    }
+}
+
+fn parse_attribute_filter(filter_str: &str) -> Result<AttributeFilter> {
+    // Parse: url=="value" or ref=="value" or path=="value"
+    // Also support single equals for matching
+    
+    let (attribute, rest) = if let Some(pos) = filter_str.find("==") {
+        (&filter_str[..pos], &filter_str[pos+2..])
+    } else if let Some(pos) = filter_str.find('=') {
+        (&filter_str[..pos], &filter_str[pos+1..])
+    } else {
+        return Err(anyhow!("Invalid filter format: {}", filter_str));
+    };
+    
+    let value = rest.trim().trim_matches('"').to_string();
+    
+    Ok(AttributeFilter {
+        attribute: attribute.trim().to_string(),
+        value,
+    })
+}
+
+fn find_all_tf_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+    let mut tf_files = Vec::new();
+    
+    if !dir.exists() {
+        return Err(anyhow!("Directory does not exist: {:?}", dir));
+    }
+    
+    if !dir.is_dir() {
+        return Err(anyhow!("Path is not a directory: {:?}", dir));
+    }
+    
+    fn visit_dir(dir: &std::path::Path, tf_files: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            
+            if path.is_dir() {
+                visit_dir(&path, tf_files)?;
+            } else if path.extension().and_then(|s| s.to_str()) == Some("tf") {
+                tf_files.push(path);
+            }
+        }
+        Ok(())
+    }
+    
+    visit_dir(dir, &mut tf_files)?;
+    Ok(tf_files)
+}
+
+fn scan_files(query: &str, dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+    let scan_query = parse_scan_query(query)?;
+    let tf_files = find_all_tf_files(dir)?;
+    
+    let mut matching_files = Vec::new();
+    
+    for file_path in tf_files {
+        if matches_query(&file_path, &scan_query)? {
+            matching_files.push(file_path);
+        }
+    }
+    
+    Ok(matching_files)
+}
+
+fn matches_query(file_path: &std::path::Path, scan_query: &ScanQuery) -> Result<bool> {
+    let content = fs::read_to_string(file_path)
+        .with_context(|| format!("Failed to read file: {:?}", file_path))?;
+    
+    let body: Body = content
+        .parse()
+        .with_context(|| format!("Failed to parse HCL: {:?}", file_path))?;
+    
+    // Look for blocks matching the query
+    for structure in body.iter() {
+        if let Some(block) = structure.as_block() {
+            if block.ident.as_str() != scan_query.block_type {
+                continue;
+            }
+            
+            // Check block label if specified
+            if let Some(ref expected_label) = scan_query.block_label {
+                let labels: Vec<String> = block
+                    .labels
+                    .iter()
+                    .map(|l| l.as_str().to_string())
+                    .collect();
+                
+                if labels.first().map(|s| s.as_str()) != Some(expected_label.as_str()) {
+                    continue;
+                }
+            }
+            
+            // If no nested blocks or attribute specified, we found a match
+            if scan_query.nested_blocks.is_empty() && scan_query.attribute.is_none() {
+                return Ok(true);
+            }
+            
+            // Navigate through nested blocks
+            let mut current_body = &block.body;
+            
+            for nested_name in &scan_query.nested_blocks {
+                let mut found_this_level = false;
+                
+                for item in current_body.iter() {
+                    if let Some(nested_block) = item.as_block() {
+                        if nested_block.ident.as_str() == nested_name {
+                            current_body = &nested_block.body;
+                            found_this_level = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if !found_this_level {
+                    // Couldn't find nested block, so this file doesn't match
+                    return Ok(false);
+                }
+            }
+            
+            // Check attribute if specified
+            if let Some(ref attr_name) = scan_query.attribute {
+                for item in current_body.iter() {
+                    if let Some(attr) = item.as_attribute() {
+                        if attr.key.as_str() == attr_name {
+                            // Check filter if specified
+                            if let Some(ref filter) = scan_query.filter {
+                                let value_str = attr.value.to_string();
+                                if !matches_filter(&value_str, filter)? {
+                                    continue;
+                                }
+                            }
+                            
+                            return Ok(true);
+                        }
+                    }
+                }
+            } else {
+                // No specific attribute required, nested blocks matched
+                return Ok(true);
+            }
+        }
+    }
+    
+    Ok(false)
+}
+
+fn matches_filter(value_str: &str, filter: &AttributeFilter) -> Result<bool> {
+    // Extract the value based on the filter attribute (url, ref, path, etc.)
+    let extracted = extract_param_from_source(value_str, &filter.attribute)?;
+    
+    if let Some(extracted_value) = extracted {
+        Ok(extracted_value == filter.value)
+    } else {
+        Ok(false)
     }
 }
