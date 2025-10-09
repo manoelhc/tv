@@ -924,8 +924,6 @@ struct ScanQuery {
 #[derive(Debug)]
 struct AttributeFilter {
     attribute: String,
-    index: Option<String>,
-    operator: String,
     value: String,
 }
 
@@ -1056,8 +1054,6 @@ fn parse_attribute_filter(filter_str: &str) -> Result<AttributeFilter> {
     
     Ok(AttributeFilter {
         attribute: attribute.trim().to_string(),
-        index: None,
-        operator: "==".to_string(),
         value,
     })
 }
